@@ -1,0 +1,97 @@
+# Credit: https://dev.to/msrabon/automating-docker-image-versioning-build-push-and-scanning-using-github-actions-388n
+name: Semantic Versioning, Docker Build, Push, and Scan
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  semver:
+    runs-on: ubuntu-latest
+
+    outputs:
+      new_version: ${{ steps.bump-semver.outputs.new_version }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Get Latest Tag
+        id: get-latest-tag
+        uses: actions-ecosystem/action-get-latest-tag@v1
+
+      - name: Determine Version Bump Type
+        id: determine-bump-type
+        run: |
+          echo "level=patch" >> $GITHUB_ENV
+          if git log -1 --pretty=%B | grep -q 'bump: major'; then
+            echo "level=major" >> $GITHUB_ENV
+          elif git log -1 --pretty=%B | grep -q 'bump: minor'; then
+            echo "level=minor" >> $GITHUB_ENV
+          fi
+
+      - name: Bump SemVer
+        id: bump-semver
+        uses: actions-ecosystem/action-bump-semver@v1
+        with:
+          current_version: ${{ steps.get-latest-tag.outputs.tag }}
+          level: ${{ env.level }}
+
+      - name: Set New Version Output
+        id: set-new-version
+        run: echo "new_version=${{ steps.bump-semver.outputs.new_version }}" >> $GITHUB_ENV
+
+      - name: Push New Tag
+        uses: actions-ecosystem/action-push-tag@v1
+        with:
+          tag: ${{ env.new_version }}
+          message: '${{ env.new_version }}: PR #${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}'
+
+  docker:
+    needs: semver
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Needed for multi-platform builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/arm/v7,linux/arm64/v8,linux/amd64
+          context: ./
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.semver.outputs.new_version }}
+            ghcr.io/${{ github.repository }}:latest
+
+  scan:
+    needs: docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Run Trivy Vulnerability Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'image'
+          image-ref: ghcr.io/${{ github.repository }}:${{ needs.semver.outputs.new_version }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'

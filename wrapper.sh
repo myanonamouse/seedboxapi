@@ -56,10 +56,16 @@ else
 	grep '"Success":true' /tmp/MAM.output > /dev/null 2>/dev/null
   	if [ $? -ne 0 ]
   	then
-		echo response: `cat /tmp/MAM.output`
-		echo Current cookie file is invalid.  Please delete it, set the mam_id, and restart the container.
-		exit 1
-	else
+			grep 'Last change too recent' /tmp/MAM.output > /dev/null 2>/dev/null
+			if [ $? -eq 0 ]
+			then
+				echo Last update too recent at startup - waiting for the cooldown instead of exiting
+			else
+				echo response: `cat /tmp/MAM.output`
+				echo Current cookie file is invalid.  Please delete it, set the mam_id, and restart the container.
+				exit 1
+			fi
+		else
 		echo Session is valid
 	fi
 
